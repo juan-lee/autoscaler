@@ -137,7 +137,7 @@ func (as *AgentPool) Id() string {
 }
 
 func (as *AgentPool) getVMsFromCache() ([]compute.VirtualMachine, error) {
-	allVMs := as.manager.azureCache.getVirtualMachines()
+	allVMs := as.manager.resourceCache.getVirtualMachines()
 	if _, exists := allVMs[as.Name]; !exists {
 		return []compute.VirtualMachine{}, fmt.Errorf("could not find VMs with poolName: %s", as.Name)
 	}

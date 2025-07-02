@@ -410,7 +410,7 @@ func (vmPool *VMPool) getSpotPoolSize() (int32, error) {
 // If excludeDeleting is true, it skips VMs in the "Deleting" state.
 // https://learn.microsoft.com/en-us/azure/virtual-machines/states-billing#provisioning-states
 func (vmPool *VMPool) getVMsFromCache(op skipOption) ([]compute.VirtualMachine, error) {
-	vmsMap := vmPool.manager.azureCache.getVirtualMachines()
+	vmsMap := vmPool.manager.resourceCache.getVirtualMachines()
 	var filteredVMs []compute.VirtualMachine
 
 	for _, vm := range vmsMap[vmPool.agentPoolName] {
@@ -480,7 +480,7 @@ func (vmPool *VMPool) TemplateNodeInfo() (*framework.NodeInfo, error) {
 }
 
 func (vmPool *VMPool) getAgentpoolFromCache() (armcontainerservice.AgentPool, error) {
-	vmsPoolMap := vmPool.manager.azureCache.getVMsPoolMap()
+	vmsPoolMap := vmPool.manager.resourceCache.getVMsPoolMap()
 	if _, exists := vmsPoolMap[vmPool.agentPoolName]; !exists {
 		return armcontainerservice.AgentPool{}, fmt.Errorf("VMs agent pool %s not found in cache", vmPool.agentPoolName)
 	}

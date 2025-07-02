@@ -59,18 +59,18 @@ var GetInstanceTypeStatically = func(template NodeTemplate) (*InstanceType, erro
 
 // GetInstanceTypeDynamically fetched vmss instance information using sku api calls.
 // It is declared as a variable for testing purpose.
-var GetInstanceTypeDynamically = func(template NodeTemplate, azCache *azureCache) (InstanceType, error) {
+var GetInstanceTypeDynamically = func(template NodeTemplate, resourceCache ResourceCache) (InstanceType, error) {
 	ctx := context.Background()
 	var instanceType InstanceType
 
-	sku, err := azCache.GetSKU(ctx, template.SkuName, template.Location)
+	sku, err := resourceCache.GetSKU(ctx, template.SkuName, template.Location)
 	if err != nil {
 		// We didn't find an exact match but this is a promo type, check for matching standard
 		promoRe := regexp.MustCompile(`(?i)_promo`)
 		skuName := promoRe.ReplaceAllString(template.SkuName, "")
 		if skuName != template.SkuName {
 			klog.V(1).Infof("No exact match found for %q, checking standard type %q. Error %v", template.SkuName, skuName, err)
-			sku, err = azCache.GetSKU(ctx, skuName, template.Location)
+			sku, err = resourceCache.GetSKU(ctx, skuName, template.Location)
 		}
 		if err != nil {
 			return instanceType, fmt.Errorf("instance type %q not supported. Error %v", template.SkuName, err)

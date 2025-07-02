@@ -232,7 +232,7 @@ func buildNodeFromTemplate(nodeGroupName string, template NodeTemplate, manager 
 	if enableDynamicInstanceList {
 		var instanceTypeDynamic InstanceType
 		klog.V(1).Infof("Fetching instance information for SKU: %s from SKU API", template.SkuName)
-		instanceTypeDynamic, dynamicErr = GetInstanceTypeDynamically(template, manager.azureCache)
+		instanceTypeDynamic, dynamicErr = GetInstanceTypeDynamically(template, manager.resourceCache)
 		if dynamicErr == nil {
 			vcpu = instanceTypeDynamic.VCPU
 			gpuCount = instanceTypeDynamic.GPU

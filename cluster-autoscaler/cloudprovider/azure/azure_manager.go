@@ -50,13 +50,13 @@ type AzureManager struct {
 	azClient *azClient
 	env      azure.Environment
 
-	// azureCache is used for caching Azure resources.
+	// resourceCache handles Azure resource access (cached or direct mode).
 	// It keeps track of nodegroups and instances
 	// (and of which nodegroup instances belong to)
-	azureCache *azureCache
-	// lastRefresh is the time azureCache was last refreshed.
-	// Together with azureCache.refreshInterval is it used to decide whether
-	// it is time to refresh the cache from Azure resources.
+	resourceCache ResourceCache
+	// lastRefresh is the time resourceCache was last refreshed.
+	// Only used in cached mode to decide whether it is time to refresh.
+	// In direct mode, this is unused as all calls are direct API calls.
 	//
 	// Cache invalidation can also be requested via invalidateCache()
 	// (used by both AzureManager and ScaleSet), which manipulates
@@ -100,17 +100,13 @@ func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovi
 		explicitlyConfigured: make(map[string]bool),
 	}
 
-	cacheTTL := refreshInterval
-	if cfg.VmssCacheTTLInSeconds != 0 {
-		cacheTTL = time.Duration(cfg.VmssCacheTTLInSeconds) * time.Second
-	}
-	cache, err := newAzureCache(azClient, cacheTTL, *cfg)
+	cache, err := newResourceCache(azClient, cfg)
 	if err != nil {
 		return nil, err
 	}
-	manager.azureCache = cache
+	manager.resourceCache = cache
 
-	if !manager.azureCache.HasVMSKUs() {
+	if !manager.resourceCache.HasVMSKUs() {
 		klog.Warning("No VM SKU info loaded, using only static SKU list")
 		cfg.EnableDynamicInstanceList = false
 	}
@@ -177,7 +173,7 @@ func (m *AzureManager) parseSKUAndVMsAgentpoolNameFromSpecName(name string) (boo
 		agentPoolName := parts[0]
 		sku := parts[1]
 
-		vmsPoolMap := m.azureCache.getVMsPoolMap()
+		vmsPoolMap := m.resourceCache.getVMsPoolMap()
 		if _, ok := vmsPoolMap[agentPoolName]; ok {
 			return true, agentPoolName, sku
 		}
@@ -216,7 +212,17 @@ func (m *AzureManager) buildNodeGroupFromSpec(spec string) (cloudprovider.NodeGr
 // Refresh is called before every main loop and can be used to dynamically update cloud provider state.
 // In particular the list of node groups returned by NodeGroups can change as a result of CloudProvider.Refresh().
 func (m *AzureManager) Refresh() error {
-	if m.lastRefresh.Add(m.azureCache.refreshInterval).After(time.Now()) {
+	// In direct mode, always return immediately as there's no cache to refresh
+	if m.config.DisableCaching {
+		return nil
+	}
+	
+	// For cached mode, check if refresh is needed
+	azCache, ok := m.resourceCache.(*azureCache)
+	if !ok {
+		return nil // Safety check
+	}
+	if m.lastRefresh.Add(azCache.refreshInterval).After(time.Now()) {
 		return nil
 	}
 	return m.forceRefresh()
@@ -226,20 +232,33 @@ func (m *AzureManager) forceRefresh() error {
 	if err := m.fetchAutoNodeGroups(); err != nil {
 		klog.Errorf("Failed to fetch autodiscovered nodegroups: %v", err)
 	}
-	if err := m.azureCache.regenerate(); err != nil {
-		klog.Errorf("Failed to regenerate Azure cache: %v", err)
+	if err := m.resourceCache.regenerate(); err != nil {
+		klog.Errorf("Failed to regenerate resource cache: %v", err)
 		return err
 	}
 	m.lastRefresh = time.Now()
-	klog.V(2).Infof("Refreshed Azure VM and VMSS list, next refresh after %v", m.lastRefresh.Add(m.azureCache.refreshInterval))
+	
+	// Log next refresh time only for cached mode
+	if !m.config.DisableCaching {
+		if azCache, ok := m.resourceCache.(*azureCache); ok {
+			klog.V(2).Infof("Refreshed Azure VM and VMSS list, next refresh after %v", m.lastRefresh.Add(azCache.refreshInterval))
+		}
+	}
 	return nil
 }
 
 // invalidateCache forces cache reload on the next check
-// by manipulating lastRefresh timestamp
+// by manipulating lastRefresh timestamp (cached mode only)
 func (m *AzureManager) invalidateCache() {
-	m.lastRefresh = time.Now().Add(-1 * m.azureCache.refreshInterval)
-	klog.V(2).Infof("Invalidated Azure cache")
+	if m.config.DisableCaching {
+		klog.V(2).Info("Cache invalidation skipped in direct mode")
+		return
+	}
+	
+	if azCache, ok := m.resourceCache.(*azureCache); ok {
+		m.lastRefresh = time.Now().Add(-1 * azCache.refreshInterval)
+		klog.V(2).Infof("Invalidated Azure cache")
+	}
 }
 
 // Fetch automatically discovered NodeGroups. These NodeGroups should be unregistered if
@@ -284,27 +303,27 @@ func (m *AzureManager) fetchAutoNodeGroups() error {
 }
 
 func (m *AzureManager) getNodeGroups() []cloudprovider.NodeGroup {
-	return m.azureCache.getRegisteredNodeGroups()
+	return m.resourceCache.getRegisteredNodeGroups()
 }
 
 // RegisterNodeGroup registers an a NodeGroup.
 func (m *AzureManager) RegisterNodeGroup(nodeGroup cloudprovider.NodeGroup) bool {
-	return m.azureCache.Register(nodeGroup)
+	return m.resourceCache.Register(nodeGroup)
 }
 
 // UnregisterNodeGroup unregisters a NodeGroup.
 func (m *AzureManager) UnregisterNodeGroup(nodeGroup cloudprovider.NodeGroup) bool {
-	return m.azureCache.Unregister(nodeGroup)
+	return m.resourceCache.Unregister(nodeGroup)
 }
 
 // GetNodeGroupForInstance returns the NodeGroup of the given Instance
 func (m *AzureManager) GetNodeGroupForInstance(instance *azureRef) (cloudprovider.NodeGroup, error) {
-	return m.azureCache.FindForInstance(instance, m.config.VMType)
+	return m.resourceCache.FindForInstance(instance, m.config.VMType)
 }
 
 // GetScaleSetOptions parse options extracted from VMSS tags and merges them with provided defaults
 func (m *AzureManager) GetScaleSetOptions(scaleSetName string, defaults config.NodeGroupAutoscalingOptions) *config.NodeGroupAutoscalingOptions {
-	options := m.azureCache.getAutoscalingOptions(azureRef{Name: scaleSetName})
+	options := m.resourceCache.getAutoscalingOptions(azureRef{Name: scaleSetName})
 	if options == nil || len(options) == 0 {
 		return &defaults
 	}
@@ -327,7 +346,7 @@ func (m *AzureManager) GetScaleSetOptions(scaleSetName string, defaults config.N
 
 // Cleanup the cache.
 func (m *AzureManager) Cleanup() {
-	m.azureCache.Cleanup()
+	m.resourceCache.Cleanup()
 }
 
 func (m *AzureManager) getFilteredNodeGroups(filter []labelAutoDiscoveryConfig) (nodeGroups []cloudprovider.NodeGroup, err error) {
@@ -344,7 +363,7 @@ func (m *AzureManager) getFilteredNodeGroups(filter []labelAutoDiscoveryConfig) 
 
 // getFilteredScaleSets gets a list of scale sets and instanceIDs.
 func (m *AzureManager) getFilteredScaleSets(filter []labelAutoDiscoveryConfig) ([]cloudprovider.NodeGroup, error) {
-	vmssList := m.azureCache.getScaleSets()
+	vmssList := m.resourceCache.getScaleSets()
 
 	var nodeGroups []cloudprovider.NodeGroup
 	for _, scaleSet := range vmssList {
@@ -416,4 +435,19 @@ func (m *AzureManager) getFilteredScaleSets(filter []labelAutoDiscoveryConfig) (
 	}
 
 	return nodeGroups, nil
+}
+
+// newResourceCache creates either a cached or direct resource cache based on configuration.
+func newResourceCache(azClient *azClient, cfg *Config) (ResourceCache, error) {
+	if cfg.DisableCaching {
+		klog.V(2).Info("Creating DirectResourceCache (caching disabled)")
+		return newDirectResourceCache(azClient, cfg), nil
+	}
+
+	klog.V(2).Info("Creating cached ResourceCache")
+	cacheTTL := refreshInterval
+	if cfg.VmssCacheTTLInSeconds != 0 {
+		cacheTTL = time.Duration(cfg.VmssCacheTTLInSeconds) * time.Second
+	}
+	return newAzureCache(azClient, cacheTTL, *cfg)
 }

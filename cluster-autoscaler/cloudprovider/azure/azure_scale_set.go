@@ -103,7 +103,7 @@ func NewScaleSet(spec *dynamic.NodeGroupSpec, az *AzureManager, curSize int64, d
 
 		manager:           az,
 		curSize:           curSize,
-		sizeRefreshPeriod: az.azureCache.refreshInterval,
+		sizeRefreshPeriod: refreshInterval, // Use default refresh interval
 		InstanceCache: InstanceCache{
 			instancesRefreshJitter: az.config.VmssVmsCacheJitter,
 		},
@@ -123,7 +123,7 @@ func NewScaleSet(spec *dynamic.NodeGroupSpec, az *AzureManager, curSize int64, d
 	if az.config.GetVmssSizeRefreshPeriod != 0 {
 		scaleSet.getVmssSizeRefreshPeriod = time.Duration(az.config.GetVmssSizeRefreshPeriod) * time.Second
 	} else {
-		scaleSet.getVmssSizeRefreshPeriod = az.azureCache.refreshInterval
+		scaleSet.getVmssSizeRefreshPeriod = refreshInterval // Use default refresh interval
 	}
 
 	if az.config.EnableDetailedCSEMessage {
@@ -183,7 +183,7 @@ func (scaleSet *ScaleSet) MaxSize() int {
 }
 
 func (scaleSet *ScaleSet) getVMSSFromCache() (compute.VirtualMachineScaleSet, error) {
-	allVMSS := scaleSet.manager.azureCache.getScaleSets()
+	allVMSS := scaleSet.manager.resourceCache.getScaleSets()
 
 	if _, exists := allVMSS[scaleSet.Name]; !exists {
 		return compute.VirtualMachineScaleSet{}, fmt.Errorf("could not find vmss: %s", scaleSet.Name)
