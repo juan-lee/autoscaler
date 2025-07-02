@@ -1055,7 +1055,7 @@ func TestFetchExplicitNodeGroups(t *testing.T) {
 
 		manager.fetchExplicitNodeGroups(ngdo.NodeGroupSpecs)
 
-		asgs := manager.azureCache.getRegisteredNodeGroups()
+		asgs := manager.resourceCache.(*azureCache).getRegisteredNodeGroups()
 		assert.Equal(t, 1, len(asgs))
 		assert.Equal(t, name, asgs[0].Id())
 		assert.Equal(t, min, asgs[0].MinSize())
@@ -1135,8 +1135,8 @@ func TestGetFilteredAutoscalingGroupsVmss(t *testing.T) {
 		manager:                  manager,
 		enableForceDelete:        manager.config.EnableForceDelete,
 		curSize:                  3,
-		sizeRefreshPeriod:        manager.azureCache.refreshInterval,
-		getVmssSizeRefreshPeriod: manager.azureCache.refreshInterval,
+		sizeRefreshPeriod:        manager.resourceCache.(*azureCache).refreshInterval,
+		getVmssSizeRefreshPeriod: manager.resourceCache.(*azureCache).refreshInterval,
 		InstanceCache:            InstanceCache{instancesRefreshPeriod: defaultVmssInstancesRefreshPeriod},
 	}}
 	assert.True(t, assert.ObjectsAreEqualValues(expectedAsgs, asgs), "expected %#v, but found: %#v", expectedAsgs, asgs)
@@ -1188,8 +1188,8 @@ func TestGetFilteredAutoscalingGroupsVmssWithConfiguredSizes(t *testing.T) {
 		manager:                  manager,
 		enableForceDelete:        manager.config.EnableForceDelete,
 		curSize:                  3,
-		sizeRefreshPeriod:        manager.azureCache.refreshInterval,
-		getVmssSizeRefreshPeriod: manager.azureCache.refreshInterval,
+		sizeRefreshPeriod:        manager.resourceCache.(*azureCache).refreshInterval,
+		getVmssSizeRefreshPeriod: manager.resourceCache.(*azureCache).refreshInterval,
 		InstanceCache:            InstanceCache{instancesRefreshPeriod: defaultVmssInstancesRefreshPeriod},
 	}}
 	assert.True(t, assert.ObjectsAreEqualValues(expectedAsgs, asgs), "expected %#v, but found: %#v", expectedAsgs, asgs)
@@ -1266,11 +1266,11 @@ func TestFetchAutoAsgsVmss(t *testing.T) {
 	manager.autoDiscoverySpecs = specs
 
 	// assert cache is empty before fetching auto asgs
-	asgs := manager.azureCache.getRegisteredNodeGroups()
+	asgs := manager.resourceCache.(*azureCache).getRegisteredNodeGroups()
 	assert.Equal(t, 0, len(asgs))
 
 	manager.fetchAutoNodeGroups()
-	asgs = manager.azureCache.getRegisteredNodeGroups()
+	asgs = manager.resourceCache.(*azureCache).getRegisteredNodeGroups()
 	assert.Equal(t, 1, len(asgs))
 	assert.Equal(t, vmssName, asgs[0].Id())
 	assert.Equal(t, minVal, asgs[0].MinSize())
@@ -1279,7 +1279,7 @@ func TestFetchAutoAsgsVmss(t *testing.T) {
 	// test explicitlyConfigured
 	manager.explicitlyConfigured[vmssName] = true
 	manager.fetchAutoNodeGroups()
-	asgs = manager.azureCache.getRegisteredNodeGroups()
+	asgs = manager.resourceCache.(*azureCache).getRegisteredNodeGroups()
 	assert.Equal(t, 1, len(asgs))
 }
 
@@ -1305,7 +1305,7 @@ func TestGetScaleSetOptions(t *testing.T) {
 	})
 
 	manager := &AzureManager{
-		azureCache: &azureCache{
+		resourceCache: &azureCache{
 			autoscalingOptions: make(map[azureRef]map[string]string),
 		},
 	}
@@ -1322,7 +1322,7 @@ func TestGetScaleSetOptions(t *testing.T) {
 		config.DefaultScaleDownUnneededTimeKey:            "30m",
 		config.DefaultScaleDownUnreadyTimeKey:             "1h",
 	}
-	manager.azureCache.autoscalingOptions[azureRef{Name: "test1"}] = tags
+	manager.resourceCache.(*azureCache).autoscalingOptions[azureRef{Name: "test1"}] = tags
 	opts := manager.GetScaleSetOptions("test1", defaultOptions)
 	assert.Equal(t, opts.ScaleDownUtilizationThreshold, 0.2)
 	assert.Equal(t, opts.ScaleDownGpuUtilizationThreshold, 0.3)
@@ -1335,14 +1335,14 @@ func TestGetScaleSetOptions(t *testing.T) {
 		config.DefaultScaleDownUnneededTimeKey:            "1m",
 		config.DefaultScaleDownUnreadyTimeKey:             "not-a-duration",
 	}
-	manager.azureCache.autoscalingOptions[azureRef{Name: "test2"}] = tags
+	manager.resourceCache.(*azureCache).autoscalingOptions[azureRef{Name: "test2"}] = tags
 	opts = manager.GetScaleSetOptions("test2", defaultOptions)
 	assert.Equal(t, opts.ScaleDownUtilizationThreshold, defaultOptions.ScaleDownUtilizationThreshold)
 	assert.Equal(t, opts.ScaleDownGpuUtilizationThreshold, defaultOptions.ScaleDownGpuUtilizationThreshold)
 	assert.Equal(t, opts.ScaleDownUnneededTime, time.Minute)
 	assert.Equal(t, opts.ScaleDownUnreadyTime, defaultOptions.ScaleDownUnreadyTime)
 
-	manager.azureCache.autoscalingOptions[azureRef{Name: "test3"}] = map[string]string{}
+	manager.resourceCache.(*azureCache).autoscalingOptions[azureRef{Name: "test3"}] = map[string]string{}
 	opts = manager.GetScaleSetOptions("test3", defaultOptions)
 	assert.Equal(t, *opts, defaultOptions)
 }
@@ -1390,7 +1390,7 @@ func TestVMSSNotFound(t *testing.T) {
 		assert.Len(t, nodeGroups, 1)
 		assert.Equal(t, nodeGroups[0].Id(), testASG)
 		// expect no scale sets to be present
-		scaleSets := manager.azureCache.getScaleSets()
+		scaleSets := manager.resourceCache.(*azureCache).getScaleSets()
 		assert.Len(t, scaleSets, 0)
 	})
 }

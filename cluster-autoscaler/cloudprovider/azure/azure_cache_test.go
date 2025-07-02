@@ -33,7 +33,7 @@ func TestFetchVMsPools(t *testing.T) {
 	defer ctrl.Finish()
 
 	provider := newTestProvider(t)
-	ac := provider.azureManager.azureCache
+	ac := provider.azureManager.resourceCache.(*azureCache)
 	mockAgentpoolclient := NewMockAgentPoolsClient(ctrl)
 	ac.azClient.agentPoolClient = mockAgentpoolclient
 
@@ -62,7 +62,7 @@ func TestRegister(t *testing.T) {
 	provider := newTestProvider(t)
 	ss := newTestScaleSet(provider.azureManager, "ss")
 
-	ac := provider.azureManager.azureCache
+	ac := provider.azureManager.resourceCache.(*azureCache)
 	ac.registeredNodeGroups = []cloudprovider.NodeGroup{ss}
 
 	isSuccess := ac.Register(ss)
@@ -79,7 +79,7 @@ func TestUnRegister(t *testing.T) {
 	ss := newTestScaleSet(provider.azureManager, "ss")
 	ss1 := newTestScaleSet(provider.azureManager, "ss1")
 
-	ac := provider.azureManager.azureCache
+	ac := provider.azureManager.resourceCache.(*azureCache)
 	ac.registeredNodeGroups = []cloudprovider.NodeGroup{ss, ss1}
 
 	isSuccess := ac.Unregister(ss)
@@ -89,7 +89,7 @@ func TestUnRegister(t *testing.T) {
 
 func TestFindForInstance(t *testing.T) {
 	provider := newTestProvider(t)
-	ac := provider.azureManager.azureCache
+	ac := provider.azureManager.resourceCache.(*azureCache)
 
 	inst := azureRef{Name: "/subscriptions/sub/resourceGroups/rg/providers/foo"}
 	ac.unownedInstances = make(map[azureRef]bool)

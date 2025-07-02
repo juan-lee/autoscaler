@@ -94,7 +94,7 @@ func newTestAzureManager(t *testing.T) *AzureManager {
 	cache, error := newAzureCache(manager.azClient, refreshInterval, *manager.config)
 	assert.NoError(t, error)
 
-	manager.azureCache = cache
+	manager.resourceCache = cache
 	return manager
 }
 
@@ -152,9 +152,9 @@ func TestHasInstance(t *testing.T) {
 	provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 	provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
 	provider.azureManager.azClient.agentPoolClient = mockAgentpoolclient
-	provider.azureManager.azureCache.clusterName = "test-cluster"
-	provider.azureManager.azureCache.clusterResourceGroup = "test-rg"
-	provider.azureManager.azureCache.enableVMsAgentPool = true // enable VMs agent pool to support mixed node group types
+	provider.azureManager.resourceCache.(*azureCache).clusterName = "test-cluster"
+	provider.azureManager.resourceCache.(*azureCache).clusterResourceGroup = "test-rg"
+	provider.azureManager.resourceCache.(*azureCache).enableVMsAgentPool = true // enable VMs agent pool to support mixed node group types
 
 	// Simulate node groups and instances
 	expectedScaleSets := newTestVMSSList(3, "test-asg", "eastus", compute.Uniform)
@@ -175,8 +175,8 @@ func TestHasInstance(t *testing.T) {
 	vmsPool := getTestVMsAgentPool(false)
 	fakeAPListPager := getFakeAgentpoolListPager(&vmssPool, &vmsPool)
 	mockAgentpoolclient.EXPECT().NewListPager(
-		provider.azureManager.azureCache.clusterResourceGroup,
-		provider.azureManager.azureCache.clusterName, nil).
+		provider.azureManager.resourceCache.(*azureCache).clusterResourceGroup,
+		provider.azureManager.resourceCache.(*azureCache).clusterName, nil).
 		Return(fakeAPListPager).AnyTimes()
 
 	// Register node groups
@@ -199,13 +199,13 @@ func TestHasInstance(t *testing.T) {
 
 	// Test HasInstance for a node from the VMSS pool
 	node := newApiNode(compute.Uniform, 0)
-	hasInstance, err := provider.azureManager.azureCache.HasInstance(node.Spec.ProviderID)
+	hasInstance, err := provider.azureManager.resourceCache.HasInstance(node.Spec.ProviderID)
 	assert.True(t, hasInstance)
 	assert.NoError(t, err)
 
 	// Test HasInstance for a node from the VMs pool
 	vmsPoolNode := newVMsNode(0)
-	hasInstance, err = provider.azureManager.azureCache.HasInstance(vmsPoolNode.Spec.ProviderID)
+	hasInstance, err = provider.azureManager.resourceCache.HasInstance(vmsPoolNode.Spec.ProviderID)
 	assert.True(t, hasInstance)
 	assert.NoError(t, err)
 }
@@ -237,7 +237,7 @@ func TestUnownedInstancesFallbackToDeletionTaint(t *testing.T) {
 	mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup, "unregistered-vmss-instance-id", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 
 	// Call HasInstance and check the result
-	hasInstance, err := provider.azureManager.azureCache.HasInstance(unregisteredVMSSInstance.Spec.ProviderID)
+	hasInstance, err := provider.azureManager.resourceCache.HasInstance(unregisteredVMSSInstance.Spec.ProviderID)
 	assert.False(t, hasInstance)
 	assert.Equal(t, cloudprovider.ErrNotImplemented, err)
 }
@@ -288,9 +288,9 @@ func TestMixedNodeGroups(t *testing.T) {
 	provider.azureManager.azClient.virtualMachinesClient = mockVMClient
 	provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 	provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
-	provider.azureManager.azureCache.clusterName = "test-cluster"
-	provider.azureManager.azureCache.clusterResourceGroup = "test-rg"
-	provider.azureManager.azureCache.enableVMsAgentPool = true // enable VMs agent pool to support mixed node group types
+	provider.azureManager.resourceCache.(*azureCache).clusterName = "test-cluster"
+	provider.azureManager.resourceCache.(*azureCache).clusterResourceGroup = "test-rg"
+	provider.azureManager.resourceCache.(*azureCache).enableVMsAgentPool = true // enable VMs agent pool to support mixed node group types
 	provider.azureManager.azClient.agentPoolClient = mockAgentpoolclient
 
 	expectedScaleSets := newTestVMSSList(3, "test-asg", "eastus", compute.Uniform)
@@ -311,7 +311,7 @@ func TestMixedNodeGroups(t *testing.T) {
 
 	vmsPool := getTestVMsAgentPool(false)
 	fakeAPListPager := getFakeAgentpoolListPager(&vmssPool, &vmsPool)
-	mockAgentpoolclient.EXPECT().NewListPager(provider.azureManager.azureCache.clusterResourceGroup, provider.azureManager.azureCache.clusterName, nil).
+	mockAgentpoolclient.EXPECT().NewListPager(provider.azureManager.resourceCache.(*azureCache).clusterResourceGroup, provider.azureManager.resourceCache.(*azureCache).clusterName, nil).
 		Return(fakeAPListPager).AnyTimes()
 
 	assert.Equal(t, len(provider.NodeGroups()), 0)

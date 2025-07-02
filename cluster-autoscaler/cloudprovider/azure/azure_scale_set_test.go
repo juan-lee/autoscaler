@@ -1218,7 +1218,7 @@ func TestScaleSetTemplateNodeInfo(t *testing.T) {
 
 	// The dynamic SKU list ("cache") in the test provider is empty
 	// (initialized with cfg.EnableDynamicInstanceList = false).
-	assert.False(t, provider.azureManager.azureCache.HasVMSKUs())
+	assert.False(t, provider.azureManager.resourceCache.HasVMSKUs())
 
 	t.Run("Checking fallback to static because dynamic list is empty", func(t *testing.T) {
 		asg.enableDynamicInstanceList = true
@@ -1237,7 +1237,7 @@ func TestScaleSetTemplateNodeInfo(t *testing.T) {
 	t.Run("Checking dynamic workflow", func(t *testing.T) {
 		asg.enableDynamicInstanceList = true
 
-		GetInstanceTypeDynamically = func(template NodeTemplate, azCache *azureCache) (InstanceType, error) {
+		GetInstanceTypeDynamically = func(template NodeTemplate, resourceCache ResourceCache) (InstanceType, error) {
 			vmssType := InstanceType{}
 			vmssType.VCPU = 1
 			vmssType.GPU = 2
@@ -1255,7 +1255,7 @@ func TestScaleSetTemplateNodeInfo(t *testing.T) {
 	t.Run("Checking static workflow if dynamic fails", func(t *testing.T) {
 		asg.enableDynamicInstanceList = true
 
-		GetInstanceTypeDynamically = func(template NodeTemplate, azCache *azureCache) (InstanceType, error) {
+		GetInstanceTypeDynamically = func(template NodeTemplate, resourceCache ResourceCache) (InstanceType, error) {
 			return InstanceType{}, fmt.Errorf("dynamic error exists")
 		}
 		GetInstanceTypeStatically = func(template NodeTemplate) (*InstanceType, error) {
@@ -1276,7 +1276,7 @@ func TestScaleSetTemplateNodeInfo(t *testing.T) {
 	t.Run("Fails to find vmss instance information using static and dynamic workflow, instance not supported", func(t *testing.T) {
 		asg.enableDynamicInstanceList = true
 
-		GetInstanceTypeDynamically = func(template NodeTemplate, azCache *azureCache) (InstanceType, error) {
+		GetInstanceTypeDynamically = func(template NodeTemplate, resourceCache ResourceCache) (InstanceType, error) {
 			return InstanceType{}, fmt.Errorf("dynamic error exists")
 		}
 		GetInstanceTypeStatically = func(template NodeTemplate) (*InstanceType, error) {
