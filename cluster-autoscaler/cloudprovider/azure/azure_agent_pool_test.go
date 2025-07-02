@@ -187,7 +187,7 @@ func TestAgentPoolGetVMsFromCache(t *testing.T) {
 	testAS.manager.config.VMType = providerazureconsts.VMTypeStandard
 	ac, err := newAzureCache(testAS.manager.azClient, refreshInterval, *testAS.manager.config)
 	assert.NoError(t, err)
-	testAS.manager.azureCache = ac
+	testAS.manager.resourceCache = ac
 
 	vms, err := testAS.getVMsFromCache()
 	assert.Equal(t, 1, len(vms))
@@ -206,7 +206,7 @@ func TestGetVMIndexes(t *testing.T) {
 	as.manager.config.VMType = providerazureconsts.VMTypeStandard
 	ac, err := newAzureCache(as.manager.azClient, refreshInterval, *as.manager.config)
 	assert.NoError(t, err)
-	as.manager.azureCache = ac
+	as.manager.resourceCache = ac
 
 	sortedIndexes, indexToVM, err := as.GetVMIndexes()
 	assert.NoError(t, err)
@@ -246,7 +246,7 @@ func TestGetCurSize(t *testing.T) {
 	as.manager.config.VMType = providerazureconsts.VMTypeStandard
 	ac, err := newAzureCache(as.manager.azClient, refreshInterval, *as.manager.config)
 	assert.NoError(t, err)
-	as.manager.azureCache = ac
+	as.manager.resourceCache = ac
 
 	as.lastRefresh = time.Now()
 	curSize, err := as.getCurSize()
@@ -271,7 +271,7 @@ func TestAgentPoolTargetSize(t *testing.T) {
 	as.manager.config.VMType = providerazureconsts.VMTypeStandard
 	ac, err := newAzureCache(as.manager.azClient, refreshInterval, *as.manager.config)
 	assert.NoError(t, err)
-	as.manager.azureCache = ac
+	as.manager.resourceCache = ac
 
 	as.lastRefresh = time.Now().Add(-1 * 15 * time.Second)
 	size, err := as.getCurSize()
@@ -291,7 +291,7 @@ func TestAgentPoolIncreaseSize(t *testing.T) {
 	as.manager.config.VMType = providerazureconsts.VMTypeStandard
 	ac, err := newAzureCache(as.manager.azClient, refreshInterval, *as.manager.config)
 	assert.NoError(t, err)
-	as.manager.azureCache = ac
+	as.manager.resourceCache = ac
 
 	err = as.IncreaseSize(-1)
 	expectedErr := fmt.Errorf("size increase must be positive")
@@ -320,7 +320,7 @@ func TestAgentPoolDecreaseTargetSize(t *testing.T) {
 	as.manager.config.VMType = providerazureconsts.VMTypeStandard
 	ac, err := newAzureCache(as.manager.azClient, refreshInterval, *as.manager.config)
 	assert.NoError(t, err)
-	as.manager.azureCache = ac
+	as.manager.resourceCache = ac
 
 	err = as.DecreaseTargetSize(-1)
 	assert.NoError(t, err)
@@ -339,7 +339,8 @@ func TestAgentPoolBelongs(t *testing.T) {
 	defer ctrl.Finish()
 
 	as := newTestAgentPool(newTestAzureManager(t), "as")
-	as.manager.azureCache.instanceToNodeGroup[azureRef{Name: testValidProviderID0}] = as
+	azCache := as.manager.resourceCache.(*azureCache)
+	azCache.instanceToNodeGroup[azureRef{Name: testValidProviderID0}] = as
 
 	flag, err := as.Belongs(&apiv1.Node{Spec: apiv1.NodeSpec{ProviderID: testValidProviderID0}})
 	assert.NoError(t, err)
@@ -354,7 +355,8 @@ func TestAgentPoolBelongs(t *testing.T) {
 	assert.False(t, flag)
 
 	as1 := newTestAgentPool(newTestAzureManager(t), "as1")
-	as1.manager.azureCache.instanceToNodeGroup[azureRef{Name: testValidProviderID0}] = as
+	azCache1 := as1.manager.resourceCache.(*azureCache)
+	azCache1.instanceToNodeGroup[azureRef{Name: testValidProviderID0}] = as
 	flag, err = as1.Belongs(&apiv1.Node{Spec: apiv1.NodeSpec{ProviderID: testValidProviderID0}})
 	assert.NoError(t, err)
 	assert.False(t, flag)
@@ -366,9 +368,10 @@ func TestDeleteInstances(t *testing.T) {
 
 	as := newTestAgentPool(newTestAzureManager(t), "as")
 	as1 := newTestAgentPool(newTestAzureManager(t), "as1")
-	as.manager.azureCache.instanceToNodeGroup[azureRef{Name: testValidProviderID0}] = as
-	as.manager.azureCache.instanceToNodeGroup[azureRef{Name: testValidProviderID1}] = as1
-	as.manager.azureCache.instanceToNodeGroup[azureRef{Name: testInvalidProviderID}] = as
+	azCache := as.manager.resourceCache.(*azureCache)
+	azCache.instanceToNodeGroup[azureRef{Name: testValidProviderID0}] = as
+	azCache.instanceToNodeGroup[azureRef{Name: testValidProviderID1}] = as1
+	azCache.instanceToNodeGroup[azureRef{Name: testInvalidProviderID}] = as
 
 	mockVMClient := mockvmclient.NewMockInterface(ctrl)
 	as.manager.azClient.virtualMachinesClient = mockVMClient
@@ -415,7 +418,8 @@ func TestAgentPoolDeleteNodes(t *testing.T) {
 	defer ctrl.Finish()
 
 	as := newTestAgentPool(newTestAzureManager(t), "as")
-	as.manager.azureCache.instanceToNodeGroup[azureRef{Name: testValidProviderID0}] = as
+	azCache := as.manager.resourceCache.(*azureCache)
+	azCache.instanceToNodeGroup[azureRef{Name: testValidProviderID0}] = as
 	expectedVMs := getExpectedVMs()
 	mockVMClient := mockvmclient.NewMockInterface(ctrl)
 	as.manager.azClient.virtualMachinesClient = mockVMClient
@@ -426,7 +430,7 @@ func TestAgentPoolDeleteNodes(t *testing.T) {
 	ac, err := newAzureCache(as.manager.azClient, refreshInterval, *as.manager.config)
 	as.manager.config.VMType = providerazureconsts.VMTypeVMSS
 	assert.NoError(t, err)
-	as.manager.azureCache = ac
+	as.manager.resourceCache = ac
 
 	err = as.DeleteNodes([]*apiv1.Node{
 		{
@@ -438,7 +442,8 @@ func TestAgentPoolDeleteNodes(t *testing.T) {
 	assert.Equal(t, expectedErr, err)
 
 	as1 := newTestAgentPool(newTestAzureManager(t), "as1")
-	as.manager.azureCache.instanceToNodeGroup[azureRef{Name: testValidProviderID0}] = as1
+	azCache1 := as1.manager.resourceCache.(*azureCache)
+	azCache1.instanceToNodeGroup[azureRef{Name: testValidProviderID0}] = as1
 	err = as.DeleteNodes([]*apiv1.Node{
 		{
 			Spec:       apiv1.NodeSpec{ProviderID: testValidProviderID0},
@@ -476,7 +481,7 @@ func TestAgentPoolNodes(t *testing.T) {
 	as.manager.config.VMType = providerazureconsts.VMTypeStandard
 	ac, err := newAzureCache(as.manager.azClient, refreshInterval, *as.manager.config)
 	assert.NoError(t, err)
-	as.manager.azureCache = ac
+	as.manager.resourceCache = ac
 
 	nodes, err := as.Nodes()
 	assert.NoError(t, err)
