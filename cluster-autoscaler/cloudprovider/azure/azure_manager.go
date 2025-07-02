@@ -216,7 +216,7 @@ func (m *AzureManager) Refresh() error {
 	if m.config.DisableCaching {
 		return nil
 	}
-	
+
 	// For cached mode, check if refresh is needed
 	azCache, ok := m.resourceCache.(*azureCache)
 	if !ok {
@@ -237,7 +237,7 @@ func (m *AzureManager) forceRefresh() error {
 		return err
 	}
 	m.lastRefresh = time.Now()
-	
+
 	// Log next refresh time only for cached mode
 	if !m.config.DisableCaching {
 		if azCache, ok := m.resourceCache.(*azureCache); ok {
@@ -254,7 +254,7 @@ func (m *AzureManager) invalidateCache() {
 		klog.V(2).Info("Cache invalidation skipped in direct mode")
 		return
 	}
-	
+
 	if azCache, ok := m.resourceCache.(*azureCache); ok {
 		m.lastRefresh = time.Now().Add(-1 * azCache.refreshInterval)
 		klog.V(2).Infof("Invalidated Azure cache")

@@ -17,11 +17,11 @@ limitations under the License.
 package azure
 
 import (
+	"context"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v5"
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/skewer"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	"context"
 )
 
 // ResourceCache defines the interface for Azure resource caching operations.

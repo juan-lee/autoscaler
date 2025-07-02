@@ -441,7 +441,7 @@ func TestAgentPoolDeleteNodes(t *testing.T) {
 	expectedErr := fmt.Errorf("node doesn't belong to a known agent pool")
 	assert.Equal(t, expectedErr, err)
 
-	as1 := newTestAgentPool(as.manager, "as1")  // Share the same manager/cache
+	as1 := newTestAgentPool(as.manager, "as1") // Share the same manager/cache
 	currentCache := as.manager.resourceCache.(*azureCache)
 	currentCache.instanceToNodeGroup[azureRef{Name: testValidProviderID0}] = as1
 	err = as.DeleteNodes([]*apiv1.Node{
