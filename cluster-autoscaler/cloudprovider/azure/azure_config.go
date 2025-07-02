@@ -103,6 +103,9 @@ type Config struct {
 
 	// EnableFastDeleteOnFailedProvisioning defines whether to delete the experimental faster VMSS instance deletion on failed provisioning
 	EnableFastDeleteOnFailedProvisioning bool `json:"enableFastDeleteOnFailedProvisioning,omitempty" yaml:"enableFastDeleteOnFailedProvisioning,omitempty"`
+
+	// DisableCaching disables all Azure resource caching when true, causing direct API calls instead
+	DisableCaching bool `json:"disableCaching,omitempty" yaml:"disableCaching,omitempty"`
 }
 
 // These are only here for backward compabitility. Their equivalent exists in providerazure.Config with a different name.
@@ -306,6 +309,9 @@ func BuildAzureConfig(configReader io.Reader) (*Config, error) {
 		return nil, err
 	}
 	if _, err = assignBoolFromEnvIfExists(&cfg.EnableFastDeleteOnFailedProvisioning, "AZURE_ENABLE_FAST_DELETE_ON_FAILED_PROVISIONING"); err != nil {
+		return nil, err
+	}
+	if _, err = assignBoolFromEnvIfExists(&cfg.DisableCaching, "AZURE_DISABLE_CACHING"); err != nil {
 		return nil, err
 	}
 
