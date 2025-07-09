@@ -267,6 +267,82 @@ func (scaleSet *ScaleSet) getScaleSetSize() (int64, error) {
 	return size, nil
 }
 
+// isOverconstrainedAllocationRequestError checks if the error is an OverconstrainedAllocationRequest error
+func isOverconstrainedAllocationRequestError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errorString := err.Error()
+	return strings.Contains(errorString, "OverconstrainedAllocationRequest")
+}
+
+// deleteInstancesWithOverconstrainedError deletes all VMSS instances that have OverconstrainedAllocationRequest error
+func (scaleSet *ScaleSet) deleteInstancesWithOverconstrainedError() error {
+	klog.V(3).Infof("Checking for instances with OverconstrainedAllocationRequest error in scale set %s", scaleSet.Name)
+
+	// Get all instances in the scale set
+	vms, rerr := scaleSet.GetScaleSetVms()
+	if rerr != nil {
+		klog.Errorf("Failed to get VMs for scale set %s: %v", scaleSet.Name, rerr)
+		return rerr.Error()
+	}
+
+	var instancesToDelete []string
+
+	// Check each instance for OverconstrainedAllocationRequest error
+	for _, vm := range vms {
+		if vm.ID == nil || *vm.ID == "" {
+			continue
+		}
+
+		// Check if the instance has failed provisioning with OverconstrainedAllocationRequest
+		if vm.ProvisioningState != nil && *vm.ProvisioningState == provisioningStateFailed {
+			// Check instance view for error details
+			if vm.InstanceView != nil && vm.InstanceView.Statuses != nil {
+				for _, status := range *vm.InstanceView.Statuses {
+					if status.Message != nil && strings.Contains(*status.Message, "OverconstrainedAllocationRequest") {
+						instanceID, err := getLastSegment(*vm.ID)
+						if err != nil {
+							klog.Errorf("Failed to get instance ID from %s: %v", *vm.ID, err)
+							continue
+						}
+						instancesToDelete = append(instancesToDelete, instanceID)
+						klog.V(3).Infof("Found instance %s with OverconstrainedAllocationRequest error", instanceID)
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if len(instancesToDelete) == 0 {
+		klog.V(3).Infof("No instances found with OverconstrainedAllocationRequest error in scale set %s", scaleSet.Name)
+		return nil
+	}
+
+	klog.Infof("Deleting %d instances with OverconstrainedAllocationRequest error from scale set %s: %v",
+		len(instancesToDelete), scaleSet.Name, instancesToDelete)
+
+	// Delete the instances using the existing deleteInstances method
+	requiredIds := &compute.VirtualMachineScaleSetVMInstanceRequiredIDs{
+		InstanceIds: &instancesToDelete,
+	}
+
+	ctx, cancel := getContextWithTimeout(vmssContextTimeout)
+	defer cancel()
+
+	future, rerr := scaleSet.deleteInstances(ctx, requiredIds, scaleSet.Id())
+	if rerr != nil {
+		klog.Errorf("Failed to delete instances with OverconstrainedAllocationRequest error from scale set %s: %v", scaleSet.Name, rerr)
+		return rerr.Error()
+	}
+
+	// Wait for the deletion to complete
+	scaleSet.waitForDeleteInstances(future, requiredIds)
+
+	return nil
+}
+
 // waitForCreateOrUpdate waits for the outcome of VMSS capacity update initiated via CreateOrUpdateAsync.
 func (scaleSet *ScaleSet) waitForCreateOrUpdateInstances(future *azure.Future) {
 	var err error
@@ -295,6 +371,14 @@ func (scaleSet *ScaleSet) waitForCreateOrUpdateInstances(future *azure.Future) {
 	}
 
 	klog.Errorf("waitForCreateOrUpdateInstances(%s) failed, err: %v", scaleSet.Name, err)
+
+	// Check if the error is OverconstrainedAllocationRequest and delete affected instances
+	if isOverconstrainedAllocationRequestError(err) {
+		klog.Infof("Detected OverconstrainedAllocationRequest error for scale set %s, checking for instances to delete", scaleSet.Name)
+		if deleteErr := scaleSet.deleteInstancesWithOverconstrainedError(); deleteErr != nil {
+			klog.Errorf("Failed to delete instances with OverconstrainedAllocationRequest error from scale set %s: %v", scaleSet.Name, deleteErr)
+		}
+	}
 }
 
 // setScaleSetSize sets ScaleSet size.
