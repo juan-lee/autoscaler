@@ -1475,3 +1475,54 @@ func TestInstanceStatusFromProvisioningStateAndPowerState(t *testing.T) {
 		})
 	})
 }
+
+func TestIsOverconstrainedError(t *testing.T) {
+	testCases := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "OverconstrainedAllocationRequest error",
+			err:      fmt.Errorf("Code=OverconstrainedAllocationRequest Message=Allocation failed"),
+			expected: true,
+		},
+		{
+			name:     "OverconstrainedZonalAllocationRequest error",
+			err:      fmt.Errorf("Code=OverconstrainedZonalAllocationRequest Message=Zonal allocation failed"),
+			expected: true,
+		},
+		{
+			name:     "error containing OverconstrainedAllocationRequest in message",
+			err:      fmt.Errorf("VM allocation failed with error: OverconstrainedAllocationRequest"),
+			expected: true,
+		},
+		{
+			name:     "error containing OverconstrainedZonalAllocationRequest in message",
+			err:      fmt.Errorf("VM allocation failed with error: OverconstrainedZonalAllocationRequest"),
+			expected: true,
+		},
+		{
+			name:     "unrelated error",
+			err:      fmt.Errorf("Some other error occurred"),
+			expected: false,
+		},
+		{
+			name:     "AllocationFailed error (not overconstrained)",
+			err:      fmt.Errorf("Code=AllocationFailed Message=Allocation failed"),
+			expected: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := isOverconstrainedError(tc.err)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
