@@ -82,6 +82,10 @@ type ScaleSet struct {
 	getVmssSizeRefreshPeriod time.Duration
 	// sizeMutex protects curSize (the number of VMs in the ScaleSet) from concurrent access
 	sizeMutex sync.Mutex
+	// overconstrainedError stores an overconstrained allocation error to be returned on the next createOrUpdateInstances call
+	overconstrainedError error
+	// overconstrainedErrorMutex protects overconstrainedError from concurrent access
+	overconstrainedErrorMutex sync.Mutex
 
 	InstanceCache
 
@@ -361,6 +365,10 @@ func (scaleSet *ScaleSet) waitForCreateOrUpdateInstances(future *azure.Future) {
 		// Check if the error is OverconstrainedAllocationRequest or OverconstrainedZonalAllocationRequest and delete affected instances
 		if isOverconstrainedError(err) {
 			klog.Infof("Detected overconstrained allocation error for scale set %s, checking for instances to delete", scaleSet.Name)
+			// Save the error to be returned on the next createOrUpdateInstances call
+			scaleSet.overconstrainedErrorMutex.Lock()
+			scaleSet.overconstrainedError = err
+			scaleSet.overconstrainedErrorMutex.Unlock()
 			if deleteErr := scaleSet.deleteInstancesWithOverconstrainedError(); deleteErr != nil {
 				klog.Errorf("Failed to delete instances with overconstrained allocation error from scale set %s: %v", scaleSet.Name, deleteErr)
 			}
@@ -376,6 +384,10 @@ func (scaleSet *ScaleSet) waitForCreateOrUpdateInstances(future *azure.Future) {
 	isSuccess, err := isSuccessHTTPResponse(httpResponse, err)
 	if isSuccess {
 		klog.V(3).Infof("waitForCreateOrUpdateInstances(%s) success", scaleSet.Name)
+		// Clear any saved overconstrained error on successful operation
+		scaleSet.overconstrainedErrorMutex.Lock()
+		scaleSet.overconstrainedError = nil
+		scaleSet.overconstrainedErrorMutex.Unlock()
 		return
 	}
 
@@ -521,6 +533,17 @@ func (scaleSet *ScaleSet) Belongs(node *apiv1.Node) (bool, error) {
 }
 
 func (scaleSet *ScaleSet) createOrUpdateInstances(vmssInfo *compute.VirtualMachineScaleSet, newSize int64) error {
+	// Check if there's a saved overconstrained error from a previous attempt
+	scaleSet.overconstrainedErrorMutex.Lock()
+	if scaleSet.overconstrainedError != nil {
+		savedErr := scaleSet.overconstrainedError
+		scaleSet.overconstrainedError = nil // Clear after returning
+		scaleSet.overconstrainedErrorMutex.Unlock()
+		klog.V(3).Infof("Returning saved overconstrained error for scale set %s: %v", scaleSet.Name, savedErr)
+		return savedErr
+	}
+	scaleSet.overconstrainedErrorMutex.Unlock()
+
 	if vmssInfo == nil {
 		return fmt.Errorf("vmssInfo cannot be nil while increating scaleSet capacity")
 	}
