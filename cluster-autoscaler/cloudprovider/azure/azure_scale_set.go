@@ -301,7 +301,7 @@ func (scaleSet *ScaleSet) deleteInstancesWithOverconstrainedError() error {
 			// Check instance view for error details
 			if vm.InstanceView != nil && vm.InstanceView.Statuses != nil {
 				for _, status := range *vm.InstanceView.Statuses {
-					if status.Message != nil && (strings.Contains(*status.Message, "OverconstrainedAllocationRequest") || strings.Contains(*status.Message, "OverconstrainedZonalAllocationRequest")) {
+					if status.Code != nil && (strings.Contains(*status.Code, "OverconstrainedAllocationRequest") || strings.Contains(*status.Code, "OverconstrainedZonalAllocationRequest")) {
 						instanceID, err := getLastSegment(*vm.ID)
 						if err != nil {
 							klog.Errorf("Failed to get instance ID from %s: %v", *vm.ID, err)
@@ -357,6 +357,14 @@ func (scaleSet *ScaleSet) waitForCreateOrUpdateInstances(future *azure.Future) {
 			scaleSet.invalidateLastSizeRefreshWithLock()
 			scaleSet.manager.invalidateCache()
 		}
+
+		// Check if the error is OverconstrainedAllocationRequest or OverconstrainedZonalAllocationRequest and delete affected instances
+		if isOverconstrainedError(err) {
+			klog.Infof("Detected overconstrained allocation error for scale set %s, checking for instances to delete", scaleSet.Name)
+			if deleteErr := scaleSet.deleteInstancesWithOverconstrainedError(); deleteErr != nil {
+				klog.Errorf("Failed to delete instances with overconstrained allocation error from scale set %s: %v", scaleSet.Name, deleteErr)
+			}
+		}
 	}()
 
 	ctx, cancel := getContextWithTimeout(asyncContextTimeout)
@@ -372,14 +380,6 @@ func (scaleSet *ScaleSet) waitForCreateOrUpdateInstances(future *azure.Future) {
 	}
 
 	klog.Errorf("waitForCreateOrUpdateInstances(%s) failed, err: %v", scaleSet.Name, err)
-
-	// Check if the error is OverconstrainedAllocationRequest or OverconstrainedZonalAllocationRequest and delete affected instances
-	if isOverconstrainedError(err) {
-		klog.Infof("Detected overconstrained allocation error for scale set %s, checking for instances to delete", scaleSet.Name)
-		if deleteErr := scaleSet.deleteInstancesWithOverconstrainedError(); deleteErr != nil {
-			klog.Errorf("Failed to delete instances with overconstrained allocation error from scale set %s: %v", scaleSet.Name, deleteErr)
-		}
-	}
 }
 
 // setScaleSetSize sets ScaleSet size.
