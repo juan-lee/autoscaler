@@ -106,7 +106,7 @@ func buildNodeFromTemplate(nodeGroupName string, inputLabels map[string]string, 
 	if enableDynamicInstanceList {
 		var vmssTypeDynamic InstanceType
 		klog.V(1).Infof("Fetching instance information for SKU: %s from SKU API", *template.Sku.Name)
-		vmssTypeDynamic, dynamicErr = GetVMSSTypeDynamically(template, manager.azureCache)
+		vmssTypeDynamic, dynamicErr = GetVMSSTypeDynamically(template, manager)
 		if dynamicErr == nil {
 			vcpu = vmssTypeDynamic.VCPU
 			gpuCount = vmssTypeDynamic.GPU

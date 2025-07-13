@@ -63,8 +63,6 @@ var isolatedVMSizes = map[string]bool{
 }
 
 func (scaleSet *ScaleSet) deleteInstances(ctx context.Context, requiredIds *compute.VirtualMachineScaleSetVMInstanceRequiredIDs, commonAsgId string) (*azure.Future, *retry.Error) {
-	scaleSet.instanceMutex.Lock()
-	defer scaleSet.instanceMutex.Unlock()
 
 	skuName := scaleSet.getSKU()
 	resourceGroup := scaleSet.manager.config.ResourceGroup

@@ -137,7 +137,10 @@ func (as *AgentPool) Id() string {
 }
 
 func (as *AgentPool) getVMsFromCache() ([]compute.VirtualMachine, error) {
-	allVMs := as.manager.azureCache.getVirtualMachines()
+	allVMs, err := as.manager.getVirtualMachines()
+	if err != nil {
+		return nil, err
+	}
 	if _, exists := allVMs[as.Name]; !exists {
 		return []compute.VirtualMachine{}, fmt.Errorf("could not find VMs with poolName: %s", as.Name)
 	}
@@ -192,8 +195,7 @@ func (as *AgentPool) getCurSize() (int64, error) {
 
 	if as.curSize != int64(len(indexes)) {
 		klog.V(6).Infof("getCurSize:as.curSize(%d) != real size (%d), invalidating cache", as.curSize, len(indexes))
-		as.manager.invalidateCache()
-	}
+		}
 
 	as.curSize = int64(len(indexes))
 	as.lastRefresh = time.Now()
@@ -295,7 +297,6 @@ func (as *AgentPool) IncreaseSize(delta int) error {
 	}
 
 	klog.V(6).Infof("IncreaseSize: invalidating cache")
-	as.manager.invalidateCache()
 
 	indexes, _, err := as.GetVMIndexes()
 	if err != nil {
@@ -338,7 +339,6 @@ func (as *AgentPool) IncreaseSize(delta int) error {
 	as.curSize = int64(expectedSize)
 	as.lastRefresh = time.Now()
 	klog.V(6).Info("IncreaseSize: invalidating cache")
-	as.manager.invalidateCache()
 	return nil
 }
 
@@ -430,7 +430,6 @@ func (as *AgentPool) DeleteInstances(instances []*azureRef) error {
 	}
 
 	klog.V(6).Infof("DeleteInstances: invalidating cache")
-	as.manager.invalidateCache()
 	return nil
 }
 

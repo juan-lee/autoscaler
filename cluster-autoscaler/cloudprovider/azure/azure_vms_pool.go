@@ -138,7 +138,10 @@ func (agentPool *VMsPool) Debug() string {
 
 func (agentPool *VMsPool) getVMsFromCache() ([]compute.VirtualMachine, error) {
 	// vmsPoolMap is a map of agent pool name to the list of virtual machines
-	vmsPoolMap := agentPool.manager.azureCache.getVirtualMachines()
+	vmsPoolMap, err := agentPool.manager.getVirtualMachines()
+	if err != nil {
+		return nil, err
+	}
 	if _, ok := vmsPoolMap[agentPool.Name]; !ok {
 		return []compute.VirtualMachine{}, fmt.Errorf("vms pool %s not found in the cache", agentPool.Name)
 	}

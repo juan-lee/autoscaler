@@ -19,21 +19,22 @@ limitations under the License.
 package azure
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/go-autorest/autorest/azure"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"github.com/Azure/skewer"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
-	kretry "k8s.io/client-go/util/retry"
 	klog "k8s.io/klog/v2"
 	providerazureconsts "sigs.k8s.io/cloud-provider-azure/pkg/consts"
-	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 )
 
 const (
@@ -50,18 +51,14 @@ type AzureManager struct {
 	azClient *azClient
 	env      azure.Environment
 
-	// azureCache is used for caching Azure resources.
-	// It keeps track of nodegroups and instances
-	// (and of which nodegroup instances belong to)
-	azureCache *azureCache
-	// lastRefresh is the time azureCache was last refreshed.
-	// Together with azureCache.refreshInterval is it used to decide whether
-	// it is time to refresh the cache from Azure resources.
-	//
-	// Cache invalidation can also be requested via invalidateCache()
-	// (used by both AzureManager and ScaleSet), which manipulates
-	// lastRefresh to force refresh on the next check.
-	lastRefresh time.Time
+	// registeredNodeGroups tracks all known NodeGroups without caching
+	registeredNodeGroups []cloudprovider.NodeGroup
+	// nodeGroupsLock protects access to registeredNodeGroups
+	nodeGroupsLock sync.RWMutex
+
+	// skuCache for dynamic instance list functionality  
+	skuCache *skewer.Cache
+	skuCacheLock sync.RWMutex
 
 	autoDiscoverySpecs   []labelAutoDiscoveryConfig
 	explicitlyConfigured map[string]bool
@@ -97,22 +94,20 @@ func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovi
 		config:               cfg,
 		env:                  env,
 		azClient:             azClient,
+		registeredNodeGroups: make([]cloudprovider.NodeGroup, 0),
+		skuCache:             &skewer.Cache{},
 		explicitlyConfigured: make(map[string]bool),
 	}
 
-	cacheTTL := refreshInterval
-	if cfg.VmssCacheTTLInSeconds != 0 {
-		cacheTTL = time.Duration(cfg.VmssCacheTTLInSeconds) * time.Second
-	}
-	cache, err := newAzureCache(azClient, cacheTTL, *cfg)
-	if err != nil {
-		return nil, err
-	}
-	manager.azureCache = cache
-
-	if !manager.azureCache.HasVMSKUs() {
-		klog.Warning("No VM SKU info loaded, using only static SKU list")
-		cfg.EnableDynamicInstanceList = false
+	// Initialize SKU cache if dynamic instance list is enabled
+	if cfg.EnableDynamicInstanceList {
+		if err := manager.initializeSKUCache(cfg.Location); err != nil {
+			klog.Errorf("Error while populating SKU list: %v", err)
+			cfg.EnableDynamicInstanceList = false
+			klog.Warning("No VM SKU info loaded, using only static SKU list")
+		} else {
+			klog.V(2).Infof("Successfully initialized SKU cache for dynamic instance list")
+		}
 	}
 
 	specs, err := ParseLabelAutoDiscoverySpecs(discoveryOpts)
@@ -125,21 +120,6 @@ func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovi
 		return nil, err
 	}
 
-	retryBackoff := wait.Backoff{
-		Duration: 2 * time.Minute,
-		Factor:   1.0,
-		Jitter:   0.1,
-		Steps:    6,
-		Cap:      10 * time.Minute,
-	}
-
-	// skuCache will already be created at this step by newAzureCache()
-	err = kretry.OnError(retryBackoff, retry.IsErrorRetriable, func() (err error) {
-		return manager.forceRefresh()
-	})
-	if err != nil {
-		return nil, err
-	}
 
 	return manager, nil
 }
@@ -150,21 +130,15 @@ func CreateAzureManager(configReader io.Reader, discoveryOpts cloudprovider.Node
 }
 
 func (m *AzureManager) fetchExplicitNodeGroups(specs []string) error {
-	changed := false
 	for _, spec := range specs {
 		nodeGroup, err := m.buildNodeGroupFromSpec(spec)
 		if err != nil {
 			return fmt.Errorf("failed to parse node group spec: %v", err)
 		}
-		if m.RegisterNodeGroup(nodeGroup) {
-			changed = true
-		}
+		m.RegisterNodeGroup(nodeGroup)
 		m.explicitlyConfigured[nodeGroup.Id()] = true
 	}
 
-	if changed {
-		m.invalidateCache()
-	}
 	return nil
 }
 
@@ -177,8 +151,10 @@ func (m *AzureManager) buildNodeGroupFromSpec(spec string) (cloudprovider.NodeGr
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse node group spec: %v", err)
 	}
-	vmsPoolSet := m.azureCache.getVMsPoolSet()
-	if _, ok := vmsPoolSet[s.Name]; ok {
+	// Check if this is a VMS pool by examining Azure VMs directly
+	if isVMsPool, err := m.isVMsPool(s.Name); err != nil {
+		klog.Warningf("Failed to check if %s is VMS pool: %v", s.Name, err)
+	} else if isVMsPool {
 		return NewVMsPool(s, m), nil
 	}
 
@@ -186,40 +162,62 @@ func (m *AzureManager) buildNodeGroupFromSpec(spec string) (cloudprovider.NodeGr
 	case providerazureconsts.VMTypeStandard:
 		return NewAgentPool(s, m)
 	case providerazureconsts.VMTypeVMSS:
-		return NewScaleSet(s, m, -1, false)
+		return NewScaleSet(s, m, false)
 	default:
 		return nil, fmt.Errorf("vmtype %s not supported", m.config.VMType)
 	}
 }
 
+// isVMsPool checks if the given nodepool name corresponds to a VMS pool by examining Azure VMs
+func (m *AzureManager) isVMsPool(nodepoolName string) (bool, error) {
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
+
+	result, err := m.azClient.virtualMachinesClient.List(ctx, m.config.ResourceGroup)
+	if err != nil {
+		return false, err.Error()
+	}
+
+	const (
+		legacyAgentpoolNameTag = "poolName"
+		agentpoolNameTag       = "aks-managed-poolName"
+		agentpoolTypeTag       = "aks-managed-agentpool-type"
+		vmsPoolType            = "VirtualMachines"
+	)
+
+	for _, vm := range result {
+		if vm.Tags == nil {
+			continue
+		}
+
+		tags := vm.Tags
+		vmPoolName := tags[agentpoolNameTag]
+		// fall back to legacy tag name if not found
+		if vmPoolName == nil {
+			vmPoolName = tags[legacyAgentpoolNameTag]
+		}
+		if vmPoolName == nil || *vmPoolName != nodepoolName {
+			continue
+		}
+
+		// nodes from vms pool will have tag "aks-managed-agentpool-type" set to "VirtualMachines"
+		if agentpoolType := tags[agentpoolTypeTag]; agentpoolType != nil {
+			return strings.EqualFold(*agentpoolType, vmsPoolType), nil
+		}
+	}
+	return false, nil
+}
+
 // Refresh is called before every main loop and can be used to dynamically update cloud provider state.
 // In particular the list of node groups returned by NodeGroups can change as a result of CloudProvider.Refresh().
 func (m *AzureManager) Refresh() error {
-	if m.lastRefresh.Add(m.azureCache.refreshInterval).After(time.Now()) {
-		return nil
-	}
-	return m.forceRefresh()
-}
-
-func (m *AzureManager) forceRefresh() error {
 	if err := m.fetchAutoNodeGroups(); err != nil {
 		klog.Errorf("Failed to fetch autodiscovered nodegroups: %v", err)
-	}
-	if err := m.azureCache.regenerate(); err != nil {
-		klog.Errorf("Failed to regenerate Azure cache: %v", err)
 		return err
 	}
-	m.lastRefresh = time.Now()
-	klog.V(2).Infof("Refreshed Azure VM and VMSS list, next refresh after %v", m.lastRefresh.Add(m.azureCache.refreshInterval))
 	return nil
 }
 
-// invalidateCache forces cache reload on the next check
-// by manipulating lastRefresh timestamp
-func (m *AzureManager) invalidateCache() {
-	m.lastRefresh = time.Now().Add(-1 * m.azureCache.refreshInterval)
-	klog.V(2).Infof("Invalidated Azure cache")
-}
 
 // Fetch automatically discovered NodeGroups. These NodeGroups should be unregistered if
 // they no longer exist in Azure.
@@ -229,7 +227,6 @@ func (m *AzureManager) fetchAutoNodeGroups() error {
 		return fmt.Errorf("cannot autodiscover NodeGroups: %s", err)
 	}
 
-	changed := false
 	exists := make(map[string]bool)
 	for _, group := range groups {
 		id := group.Id()
@@ -243,7 +240,6 @@ func (m *AzureManager) fetchAutoNodeGroups() error {
 		}
 		if m.RegisterNodeGroup(group) {
 			klog.V(3).Infof("Autodiscovered NodeGroup %s using tags %v", group.Id(), m.autoDiscoverySpecs)
-			changed = true
 		}
 	}
 
@@ -251,39 +247,117 @@ func (m *AzureManager) fetchAutoNodeGroups() error {
 		nodeGroupID := nodeGroup.Id()
 		if !exists[nodeGroupID] && !m.explicitlyConfigured[nodeGroupID] {
 			m.UnregisterNodeGroup(nodeGroup)
-			changed = true
 		}
-	}
-
-	if changed {
-		m.invalidateCache()
 	}
 
 	return nil
 }
 
 func (m *AzureManager) getNodeGroups() []cloudprovider.NodeGroup {
-	return m.azureCache.getRegisteredNodeGroups()
+	m.nodeGroupsLock.RLock()
+	defer m.nodeGroupsLock.RUnlock()
+	return m.registeredNodeGroups
 }
 
-// RegisterNodeGroup registers an a NodeGroup.
+// RegisterNodeGroup registers a NodeGroup.
 func (m *AzureManager) RegisterNodeGroup(nodeGroup cloudprovider.NodeGroup) bool {
-	return m.azureCache.Register(nodeGroup)
+	m.nodeGroupsLock.Lock()
+	defer m.nodeGroupsLock.Unlock()
+
+	for i := range m.registeredNodeGroups {
+		if existing := m.registeredNodeGroups[i]; strings.EqualFold(existing.Id(), nodeGroup.Id()) {
+			if existing.MinSize() == nodeGroup.MinSize() && existing.MaxSize() == nodeGroup.MaxSize() {
+				// Node group is already registered and min/max size haven't changed, no action required.
+				return false
+			}
+			m.registeredNodeGroups[i] = nodeGroup
+			klog.V(4).Infof("Node group %q updated", nodeGroup.Id())
+			return true
+		}
+	}
+
+	klog.V(4).Infof("Registering Node Group %q", nodeGroup.Id())
+	m.registeredNodeGroups = append(m.registeredNodeGroups, nodeGroup)
+	return true
 }
 
 // UnregisterNodeGroup unregisters a NodeGroup.
 func (m *AzureManager) UnregisterNodeGroup(nodeGroup cloudprovider.NodeGroup) bool {
-	return m.azureCache.Unregister(nodeGroup)
+	m.nodeGroupsLock.Lock()
+	defer m.nodeGroupsLock.Unlock()
+
+	updated := make([]cloudprovider.NodeGroup, 0, len(m.registeredNodeGroups))
+	changed := false
+	for _, existing := range m.registeredNodeGroups {
+		if strings.EqualFold(existing.Id(), nodeGroup.Id()) {
+			klog.V(1).Infof("Unregistered node group %s", nodeGroup.Id())
+			changed = true
+			continue
+		}
+		updated = append(updated, existing)
+	}
+	m.registeredNodeGroups = updated
+	return changed
 }
 
 // GetNodeGroupForInstance returns the NodeGroup of the given Instance
 func (m *AzureManager) GetNodeGroupForInstance(instance *azureRef) (cloudprovider.NodeGroup, error) {
-	return m.azureCache.FindForInstance(instance, m.config.VMType)
+	m.nodeGroupsLock.RLock()
+	defer m.nodeGroupsLock.RUnlock()
+
+	// Check each registered node group to see if the instance belongs to it
+	for _, nodeGroup := range m.registeredNodeGroups {
+		instances, err := nodeGroup.Nodes()
+		if err != nil {
+			klog.Warningf("Failed to get nodes for nodegroup %s: %v", nodeGroup.Id(), err)
+			continue
+		}
+		
+		for _, inst := range instances {
+			if strings.EqualFold(inst.Id, instance.Name) {
+				return nodeGroup, nil
+			}
+		}
+	}
+	
+	return nil, nil
+}
+
+// HasInstance checks if the given providerID exists by checking all registered node groups
+func (m *AzureManager) HasInstance(providerID string) (bool, error) {
+	resourceID, err := convertResourceGroupNameToLower(providerID)
+	if err != nil {
+		// Most likely an invalid resource id, we should return an error
+		return false, err
+	}
+
+	instanceRef := &azureRef{Name: resourceID}
+	nodeGroup, err := m.GetNodeGroupForInstance(instanceRef)
+	if err != nil {
+		return false, err
+	}
+	
+	// If we found a node group, the instance exists
+	return nodeGroup != nil, nil
+}
+
+// getAutoscalingOptionsFromVMSS retrieves autoscaling options from VMSS tags
+func (m *AzureManager) getAutoscalingOptionsFromVMSS(scaleSetName string) map[string]string {
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
+
+	vmss, rerr := m.azClient.virtualMachineScaleSetsClient.Get(ctx, m.config.ResourceGroup, scaleSetName)
+	if rerr != nil {
+		klog.Warningf("Failed to get VMSS %s: %v", scaleSetName, rerr)
+		return nil
+	}
+
+	return extractAutoscalingOptionsFromScaleSetTags(vmss.Tags)
 }
 
 // GetScaleSetOptions parse options extracted from VMSS tags and merges them with provided defaults
 func (m *AzureManager) GetScaleSetOptions(scaleSetName string, defaults config.NodeGroupAutoscalingOptions) *config.NodeGroupAutoscalingOptions {
-	options := m.azureCache.getAutoscalingOptions(azureRef{Name: scaleSetName})
+	options := m.getAutoscalingOptionsFromVMSS(scaleSetName)
 	if options == nil || len(options) == 0 {
 		return &defaults
 	}
@@ -304,9 +378,9 @@ func (m *AzureManager) GetScaleSetOptions(scaleSetName string, defaults config.N
 	return &defaults
 }
 
-// Cleanup the cache.
+// Cleanup performs any necessary cleanup operations.
 func (m *AzureManager) Cleanup() {
-	m.azureCache.Cleanup()
+	// No cleanup needed since we're not using caching
 }
 
 func (m *AzureManager) getFilteredNodeGroups(filter []labelAutoDiscoveryConfig) (nodeGroups []cloudprovider.NodeGroup, err error) {
@@ -321,9 +395,101 @@ func (m *AzureManager) getFilteredNodeGroups(filter []labelAutoDiscoveryConfig) 
 	return nil, fmt.Errorf("vmType %q does not support autodiscovery", m.config.VMType)
 }
 
+// getScaleSets returns all scale sets in the resource group using Azure API
+func (m *AzureManager) getScaleSets() (map[string]compute.VirtualMachineScaleSet, error) {
+	ctx, cancel := getContextWithTimeout(vmssContextTimeout)
+	defer cancel()
+
+	result, err := m.azClient.virtualMachineScaleSetsClient.List(ctx, m.config.ResourceGroup)
+	if err != nil {
+		klog.Errorf("VirtualMachineScaleSetsClient.List in resource group %q failed: %v", m.config.ResourceGroup, err)
+		return nil, err.Error()
+	}
+
+	sets := make(map[string]compute.VirtualMachineScaleSet)
+	for _, vmss := range result {
+		sets[*vmss.Name] = vmss
+	}
+	return sets, nil
+}
+
+// getVirtualMachines returns virtual machines grouped by pool name using Azure API
+func (m *AzureManager) getVirtualMachines() (map[string][]compute.VirtualMachine, error) {
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
+
+	result, err := m.azClient.virtualMachinesClient.List(ctx, m.config.ResourceGroup)
+	if err != nil {
+		klog.Errorf("VirtualMachinesClient.List in resource group %q failed: %v", m.config.ResourceGroup, err)
+		return nil, err.Error()
+	}
+
+	const (
+		legacyAgentpoolNameTag = "poolName"
+		agentpoolNameTag       = "aks-managed-poolName"
+	)
+
+	instances := make(map[string][]compute.VirtualMachine)
+	for _, instance := range result {
+		if instance.Tags == nil {
+			continue
+		}
+
+		tags := instance.Tags
+		vmPoolName := tags[agentpoolNameTag]
+		// fall back to legacy tag name if not found
+		if vmPoolName == nil {
+			vmPoolName = tags[legacyAgentpoolNameTag]
+		}
+		if vmPoolName == nil {
+			continue
+		}
+
+		instances[*vmPoolName] = append(instances[*vmPoolName], instance)
+	}
+	return instances, nil
+}
+
+// initializeSKUCache initializes the SKU cache for dynamic instance list functionality
+func (m *AzureManager) initializeSKUCache(location string) error {
+	if location == "" {
+		return fmt.Errorf("location not specified")
+	}
+
+	cache, err := skewer.NewCache(context.Background(),
+		skewer.WithLocation(location),
+		skewer.WithResourceClient(m.azClient.skuClient),
+	)
+	if err != nil {
+		return err
+	}
+
+	m.skuCacheLock.Lock()
+	defer m.skuCacheLock.Unlock()
+	m.skuCache = cache
+	return nil
+}
+
+// HasVMSKUs returns true if the manager has any VM SKUs loaded
+func (m *AzureManager) HasVMSKUs() bool {
+	m.skuCacheLock.RLock()
+	defer m.skuCacheLock.RUnlock()
+	return !(m.skuCache == nil || m.skuCache.Equal(&skewer.Cache{}))
+}
+
+// GetSKU retrieves SKU information for the given SKU name and location
+func (m *AzureManager) GetSKU(ctx context.Context, skuName, location string) (skewer.SKU, error) {
+	m.skuCacheLock.RLock()
+	defer m.skuCacheLock.RUnlock()
+	return m.skuCache.Get(ctx, skuName, skewer.VirtualMachines, location)
+}
+
 // getFilteredScaleSets gets a list of scale sets and instanceIDs.
 func (m *AzureManager) getFilteredScaleSets(filter []labelAutoDiscoveryConfig) ([]cloudprovider.NodeGroup, error) {
-	vmssList := m.azureCache.getScaleSets()
+	vmssList, err := m.getScaleSets()
+	if err != nil {
+		return nil, err
+	}
 
 	var nodeGroups []cloudprovider.NodeGroup
 	for _, scaleSet := range vmssList {
@@ -379,14 +545,9 @@ func (m *AzureManager) getFilteredScaleSets(filter []labelAutoDiscoveryConfig) (
 			continue
 		}
 
-		curSize := int64(-1)
-		if scaleSet.Sku != nil && scaleSet.Sku.Capacity != nil {
-			curSize = *scaleSet.Sku.Capacity
-		}
-
 		dedicatedHost := scaleSet.VirtualMachineScaleSetProperties != nil && scaleSet.VirtualMachineScaleSetProperties.HostGroup != nil
 
-		vmss, err := NewScaleSet(spec, m, curSize, dedicatedHost)
+		vmss, err := NewScaleSet(spec, m, dedicatedHost)
 		if err != nil {
 			klog.Warningf("ignoring vmss %q %s", *scaleSet.Name, err)
 			continue

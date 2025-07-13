@@ -60,18 +60,18 @@ var GetVMSSTypeStatically = func(template compute.VirtualMachineScaleSet) (*Inst
 
 // GetVMSSTypeDynamically fetched vmss instance information using sku api calls.
 // It is declared as a variable for testing purpose.
-var GetVMSSTypeDynamically = func(template compute.VirtualMachineScaleSet, azCache *azureCache) (InstanceType, error) {
+var GetVMSSTypeDynamically = func(template compute.VirtualMachineScaleSet, manager *AzureManager) (InstanceType, error) {
 	ctx := context.Background()
 	var vmssType InstanceType
 
-	sku, err := azCache.GetSKU(ctx, *template.Sku.Name, *template.Location)
+	sku, err := manager.GetSKU(ctx, *template.Sku.Name, *template.Location)
 	if err != nil {
 		// We didn't find an exact match but this is a promo type, check for matching standard
 		promoRe := regexp.MustCompile(`(?i)_promo`)
 		skuName := promoRe.ReplaceAllString(*template.Sku.Name, "")
 		if skuName != *template.Sku.Name {
 			klog.V(1).Infof("No exact match found for %q, checking standard type %q. Error %v", *template.Sku.Name, skuName, err)
-			sku, err = azCache.GetSKU(ctx, skuName, *template.Location)
+			sku, err = manager.GetSKU(ctx, skuName, *template.Location)
 		}
 		if err != nil {
 			return vmssType, fmt.Errorf("instance type %q not supported. Error %v", *template.Sku.Name, err)
